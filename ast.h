@@ -105,6 +105,9 @@ typedef struct Node {
 } Node;
 
 extern Node *ast_root;
+extern int ast_typed;      /* types are printed once semantic analysis ran */
+extern int ast_ascii;      /* draw the tree with ASCII instead of box characters */
+extern int ast_color;      /* colour the tree with ANSI escapes */
 
 Node *new_node(NodeKind kind, int line);
 Node *node1(NodeKind kind, int line, Node *a);

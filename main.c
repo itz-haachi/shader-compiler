@@ -15,10 +15,15 @@
  *   --no-symtab   do not print the symbol table
  *   --no-quads    do not print the quadruple table
  *   --ir-only     only print the three-address code (implies all of the above)
+ *   --ascii       draw the AST with ASCII characters instead of box drawing
+ *   --no-color    never colour the AST (colour is used only on a terminal)
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "ast.h"
 #include "symtab.h"
 #include "semantic.h"
@@ -37,7 +42,7 @@ static void banner(const char *title)
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s [--no-tokens] [--no-ast] [--no-symtab] [--no-quads] [--ir-only] [file.frag]\n", prog);
+    fprintf(stderr, "usage: %s [--no-tokens] [--no-ast] [--no-symtab] [--no-quads] [--ir-only] [--ascii] [--no-color] [file.frag]\n", prog);
 }
 
 int main(int argc, char *argv[])
@@ -45,6 +50,7 @@ int main(int argc, char *argv[])
     int i, result;
     int show_ast = 1, show_symtab = 1, show_quads = 1;
     char *file = 0;
+    int color = 1;
 
     /* keep stdout and stderr (error messages) in order */
     setvbuf(stdout, 0, _IONBF, 0);
@@ -54,6 +60,8 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--no-ast") == 0)    show_ast = 0;
         else if (strcmp(argv[i], "--no-symtab") == 0) show_symtab = 0;
         else if (strcmp(argv[i], "--no-quads") == 0)  show_quads = 0;
+        else if (strcmp(argv[i], "--ascii") == 0)     ast_ascii = 1;
+        else if (strcmp(argv[i], "--no-color") == 0)  color = 0;
         else if (strcmp(argv[i], "--ir-only") == 0)
             show_tokens = show_ast = show_symtab = show_quads = 0;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -66,6 +74,12 @@ int main(int argc, char *argv[])
             file = argv[i];
         }
     }
+
+#ifndef _WIN32
+    ast_color = color && isatty(1) && getenv("NO_COLOR") == 0;
+#else
+    (void)color;
+#endif
 
     if (file) {
         yyin = fopen(file, "r");

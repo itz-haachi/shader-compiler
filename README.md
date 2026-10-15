@@ -67,6 +67,8 @@ To type a shader instead, run `./minic` with no file and finish with Ctrl+D.
 | `--no-symtab` | don't print the symbol table |
 | `--no-quads` | don't print the quadruple table |
 | `--ir-only` | print only the verdicts, errors and three-address code |
+| `--ascii` | draw the AST with `|--` and `` `-- `` instead of box-drawing characters (for terminals without UTF-8) |
+| `--no-color` | don't colour the AST (colour is only used when output goes to a terminal; `NO_COLOR` is also respected) |
 
 Examples:
 
@@ -115,7 +117,45 @@ N semantic error(s), M warning(s)
 Valid shader program
 ```
 
-Excerpt for `test.frag`:
+The typed AST is drawn as a tree. Each child shows its role (`cond:`,
+`then:`, `body:`, `init:`, `target:`, `value:`, `index:`), each expression
+shows its type, and declarations and statements show their source line. On
+a terminal, node kinds, types and roles are shown in colour. Excerpt for
+`test.frag`:
+
+```
+└── Function void main()   [line 26]
+    └── body: Block
+        ├── VarDecl vec3 n   [line 28]
+        │   └── init: Call normalize : vec3
+        │       └── Id vNormal : vec3
+        ...
+        ├── For   [line 33]
+        │   ├── init: VarDecl int i   [line 33]
+        │   │   └── init: Const 0 : int
+        │   ├── cond: Binary < : bool
+        │   │   ├── Id i : int
+        │   │   └── Const 4 : int
+        │   ├── step: Unary ++ : int
+        │   │   └── Id i : int
+        │   └── body: Block
+        │       └── ExprStmt
+        │           └── Assign *= : float
+        │               ├── target: Id diff : float
+        │               └── value: Index [] : float
+        │                   ├── Id uWeights : float[4]
+        │                   └── index: Id i : int
+```
+
+Implicit conversions inserted by the semantic phase appear as their own nodes:
+
+```
+VarDecl float f   [line 3]
+`-- init: ImplicitConv to float
+    `-- Const 1 : int
+```
+
+The symbol table and three-address code for `test.frag`:
 
 ```
 NAME             KIND       TYPE                   QUALIFIERS         SCOPE        DEPTH  LINE
@@ -276,24 +316,267 @@ Translation schemes:
 
 ---
 
-## 4. Project layout
+## 4. Files and what each one does
+
+### 4.1 How the files work together
 
 ```
-shader_final.l      phase 1  lexer (lex/flex)
-shader.y            phase 2  grammar + AST construction (yacc/bison)
-ast.h / ast.c       AST node definitions, constructors, tree printer
-types.h / types.c   GLSL type representation and conversion rules
-symtab.h / symtab.c scoped symbol table, function table, struct table
-semantic.h / .c     phase 3  semantic analysis / type checking
-icg.h / icg.c       phase 4  three-address code (quadruples)
-main.c              driver: runs the phases, command-line options
-Makefile, build.sh  build scripts
-run_tests.sh        test runner
-test.frag           sample fragment shader from Review 1
-tests/valid/              shaders that must compile
-tests/semantic_errors/    shaders with semantic errors (each line marked // ERROR)
-tests/syntax_errors/      shaders with lexical / syntax errors
+              test.frag  (shader source)
+                  │
+                  ▼
+ ┌─────────────────────────────────┐   tokens    ┌──────────────────────────────┐
+ │ shader_final.l   (lexer)        │ ──────────▶ │ shader.y   (parser)          │
+ │ phase 1: characters → tokens    │ ◀────────── │ phase 2: tokens → AST        │
+ └─────────────────────────────────┘ struct names└──────────────┬───────────────┘
+                                                                │ builds nodes with
+                                                                ▼
+                                                 ┌──────────────────────────────┐
+                                                 │ ast.h / ast.c                │
+                                                 │ the tree + the tree printer  │
+                                                 └──────────────┬───────────────┘
+                                                                │ ast_root
+                                                                ▼
+ ┌─────────────────────────────────┐   uses      ┌──────────────────────────────┐
+ │ symtab.h / symtab.c             │ ◀────────── │ semantic.h / semantic.c      │
+ │ scopes, functions, structs      │             │ phase 3: checks + types the  │
+ ├─────────────────────────────────┤   uses      │ AST                          │
+ │ types.h / types.c               │ ◀────────── │                              │
+ │ GLSL types and conversions      │             └──────────────┬───────────────┘
+ └─────────────────────────────────┘                            │ typed AST
+                                                                ▼
+                                                 ┌──────────────────────────────┐
+                                                 │ icg.h / icg.c                │
+                                                 │ phase 4: typed AST → TAC     │
+                                                 │ (quadruples)                 │
+                                                 └──────────────────────────────┘
+
+ main.c calls each phase in order and prints its output.
 ```
+
+### 4.2 Compiler source files
+
+#### `shader_final.l`: lexical analyzer (phase 1, lex/flex)
+
+* **Role:** reads the shader one character at a time and groups the
+  characters into **tokens**, which the parser asks for one at a time
+  through `yylex()`.
+* **What it does:**
+  * Prints each token as one row of the token table (`LINE TOKEN DETAIL LEXEME`).
+  * Has a table of 162 GLSL keywords (`keywords[]`, searched by
+    `lookup_keyword()`). Each keyword maps to a parser token: `TYPE_NAME`,
+    `QUALIFIER`, `IF`, `FOR`, and so on.
+  * Rejects the 39 reserved words such as `class` and `goto`.
+  * Recognises int, uint, hex, octal, float and bool constants, every
+    operator and punctuator, and comments. `skip_block_comment()` reports
+    an unterminated comment.
+  * Reports lexical errors with line numbers: malformed numbers (`12abc`),
+    bad octals (`09`), stray characters.
+  * An identifier that was declared as a struct (asked through
+    `is_struct_name()` in `shader.y`) is returned as a `TYPE_NAME`, so
+    `Light l;` parses as a declaration.
+  * `emit()` prints the token, remembers it for syntax error messages
+    (`last_lexeme`), and passes its text to the parser through
+    `yylval.str`.
+* **Output:** `lex.yy.c` (generated by flex).
+
+#### `shader.y`: syntax analyzer (phase 2, yacc/bison)
+
+* **Role:** checks that the token stream follows the GLSL grammar and
+  builds the **abstract syntax tree (AST)**.
+* **What it does:**
+  * Is an LALR(1) grammar with about 150 productions for global declarations,
+    structs, interface blocks, functions, the 8 kinds of statement and
+    all expressions. It has **0 conflicts**.
+  * Gives operator precedence and associativity with `%left` and `%right`,
+    exactly as in C and GLSL. The dangling `else` is resolved with
+    `%nonassoc LOWER_THAN_ELSE`.
+  * Every production has an action that builds an AST node with
+    `new_node()`, `node2()` and similar helpers. The finished tree is
+    stored in `ast_root`.
+  * `finish_decl()` combines `qualifiers type` with a list of declarators,
+    so `uniform float a, b[4];` becomes two `VarDecl` nodes.
+    `qualifier_flag()` turns `in`, `out`, `uniform`, ... into bit flags.
+  * Records struct names with `add_struct_name()` so the lexer can return
+    them as type names.
+  * Error recovery (`error ';'`) and `yyerror()` print
+    `line N: syntax error near 'x'` and continue parsing, so several
+    errors can be reported in one run.
+* **Output:** `y.tab.c` and `y.tab.h` (the token codes, which the lexer
+  also includes).
+
+#### `ast.h` / `ast.c`: abstract syntax tree
+
+* **Role:** the data structure shared by phases 2, 3 and 4.
+* **`ast.h`** defines:
+  * `Node` (kind, line, children `a b c d`, a `next` link for lists,
+    `type`, `sym`, ...).
+  * The node kinds (`N_FUNC`, `N_IF`, `N_BINARY`, `N_CALL`, ...).
+  * The operator codes (`OP_ADD`, `OP_LT`, ...).
+  * The qualifier flags (`Q_CONST`, `Q_IN`, `Q_UNIFORM`, ...).
+* **`ast.c`** contains:
+  * The constructors (`new_node`, `node1`, `node2`, `node_op`,
+    `node_str`) and list helpers (`append`, `list_len`).
+  * `op_str()` and `quals_str()`, which turn operator codes and qualifier
+    flags back into text.
+  * **The tree printer:** `print_ast()`, `print_tree()`, `node_label()` and
+    `node_children()`. It draws the typed AST with box-drawing lines
+    (`--ascii` for plain ASCII) and colours. Each child shows its role
+    (`cond:`, `then:`, ...) and each expression shows its type.
+
+#### `types.h` / `types.c`: GLSL types
+
+* **Role:** one representation of a GLSL type, used everywhere else.
+* **What it does:**
+  * `Type` holds `base` (bool, int, uint, float, double, sampler, image
+    or struct), `vec` (number of components, or rows for a matrix),
+    `cols` (number of matrix columns) and `arr` (array size).
+  * `type_from_name()` turns `"vec3"`, `"mat2x4"`, `"sampler2D"` or a
+    struct name into a `Type`.
+  * `type_str()` turns a `Type` back into text (`"vec3"`, `"float[4]"`).
+  * Classification helpers: `is_scalar`, `is_vector`, `is_matrix`,
+    `is_numeric`, `is_integer`, `components`, ...
+  * `can_convert()` holds the **implicit conversion** rule
+    `int → uint → float → double`. Shapes must match and `bool` never
+    converts.
+
+#### `symtab.h` / `symtab.c`: symbol table
+
+* **Role:** remembers every declared name: its kind, type, qualifiers,
+  scope and line.
+* **What it does:**
+  * **Scopes:** `scope_push()` and `scope_pop()` keep a stack of scopes,
+    with depth 0 for globals. `sym_insert()` adds a name to the current
+    scope. `sym_lookup()` searches from the innermost scope outwards, and
+    `sym_lookup_current()` searches only the current scope, to detect
+    redeclarations.
+  * **Functions** are kept in their own list so they can be overloaded.
+    `func_insert()` adds one, and `func_find_exact()`, `func_first()` and
+    `func_next()` look them up. `func_mangle_overloads()` gives overloads
+    distinct IR names such as `scale(vec3)`.
+  * **Structs:** `struct_define()`, `struct_lookup()` and
+    `struct_member()` (which looks up a member's type).
+  * `make_irname()` gives each variable a unique name for the
+    intermediate code. A shadowed `i` becomes `i_1`, and a user variable
+    named like a temporary (`t1`) becomes `t1_`.
+  * `symtab_print()` prints the struct types and the symbol table shown
+    in the output.
+
+#### `semantic.h` / `semantic.c`: semantic analyzer (phase 3)
+
+* **Role:** checks the meaning of the program, reports semantic errors,
+  and annotates the AST with types (the **typed AST**).
+* **What it does:**
+  * `semantic_analyze()` is the entry point. It predeclares the built-in
+    variables (`add_builtins()`: `gl_Position`, `gl_FragCoord`, ...),
+    walks every global declaration and function, then checks that
+    `void main()` exists and that every called function has a body.
+  * **Declarations:**
+    * `declare_var()` checks storage qualifiers, `const`, samplers and
+      redeclarations.
+    * `check_init()` checks initializers and initializer lists.
+    * `check_struct_def()` and `check_block()` handle structs and
+      interface blocks.
+    * `check_function()` handles parameters, prototypes, overloads,
+      `main()` and missing returns.
+    * `resolve_type()` checks array sizes, which must be constant;
+      `const_eval()` computes them.
+  * **Expressions:** `check_expr()` computes the type of each node and
+    calls the matching checker:
+    * `check_binary()`, `check_unary()` and `check_assign()` apply the
+      operator rules. `shape_result()` gives the result shape for
+      vector/matrix arithmetic, e.g. `mat4 * vec4 → vec4`.
+    * `check_field()` handles swizzles and struct members.
+    * `check_index()` handles arrays, vectors and matrices.
+    * `check_ctor()` handles constructors.
+    * `check_call()` handles user functions and overload resolution.
+    * `check_builtin()` handles about 60 built-in functions such as
+      `dot`, `mix` and `texture`.
+  * **Implicit conversions:** `coerce()` inserts an `ImplicitConv` node
+    wherever a conversion is needed, so phase 4 sees every conversion
+    explicitly.
+  * **Lvalues:** `writable()` and `check_lvalue()` reject assignments to
+    `const`, `uniform`, `in` and read-only built-ins, and swizzles that
+    repeat a component.
+  * **Statements:** `check_stmt()` checks that conditions are `bool`,
+    that `break`/`continue`/`case`/`default` are in the right place,
+    that case labels are not duplicated, and that `return` types match.
+  * Errors are printed by `sem_error()` and warnings by `sem_warning()`.
+
+#### `icg.h` / `icg.c`: intermediate code generator (phase 4)
+
+* **Role:** translates the typed AST into **three-address code**, stored
+  as **quadruples** `(op, arg1, arg2, result)`.
+* **What it does:**
+  * `icg_generate()` is the entry point. It emits `__init_globals` for
+    global initializers, then a `func ... endfunc` block for each
+    function.
+  * `gen_expr()` returns the operand that holds an expression's value
+    (a variable, a constant or a new temporary `tN`).
+    `gen_short_circuit()` handles `&&` and `||`, and `gen_args()`
+    handles call and constructor arguments (`param` / `refparam`).
+  * `gen_store()` writes to an lvalue. Nested targets such as
+    `a[i].pos.x` are handled as read-modify-write.
+  * `gen_stmt()` and `gen_switch()` translate statements into labels and
+    jumps (`if` / `ifFalse` / `goto`). `break` and `continue` labels are
+    kept on stacks.
+  * `gen_init()` handles declarations with initializers and initializer
+    lists.
+  * `new_temp()` creates a **typed** temporary, so one temporary can hold
+    a whole `vec4`. `new_label()` creates `L1`, `L2`, ...
+  * `assign_to()` avoids a needless copy (`x = a + b` instead of
+    `t1 = a + b; x = t1`), and `renumber_temps()` then closes the gaps in
+    the temporary numbers.
+  * `icg_print_tac()`, `icg_print_quads()` and `icg_print_temps()` print
+    the three sections of the phase 4 output.
+* The quadruple array `quads[]` / `n_quads` is the input for the
+  planned optimization and target code phases.
+
+#### `main.c`: compiler driver
+
+* **Role:** the program's `main()`, which runs the phases in order.
+* **What it does:**
+  * Reads the command-line options (`--no-tokens`, `--no-ast`,
+    `--no-symtab`, `--no-quads`, `--ir-only`, `--ascii`, `--no-color`).
+  * Opens the input file, or reads from stdin.
+  * Runs `yyparse()` (phases 1 and 2), then `semantic_analyze()`
+    (phase 3), then `icg_generate()` (phase 4), and prints each phase's
+    section.
+  * Stops at the first phase that reports errors and prints the verdict
+    (`Valid shader program` / `Invalid shader program (...)`). The exit
+    status is 0 or 1.
+
+### 4.3 Build, test and configuration files
+
+| File | What it does |
+|------|--------------|
+| `Makefile` | `make` runs bison on `shader.y`, flex on `shader_final.l`, then compiles all C files into `./minic`. `make test` runs the tests, and `make clean` deletes the generated files. |
+| `build.sh` | The same three build steps as a plain shell script, for machines without `make`. |
+| `run_tests.sh` | Runs `./minic` on every test shader and checks the exit status: 0 for `tests/valid`, 1 for the error folders. Prints PASS or FAIL for each file and a summary. |
+| `.gitignore` | Keeps generated files (`minic`, `lex.yy.c`, `y.tab.c`, `y.tab.h`, `y.output`) out of git. |
+| `.gitattributes` | Keeps LF line endings for `*.sh` and `Makefile`, so they still run under Linux or WSL after a Windows checkout. |
+
+### 4.4 Generated files (not in git; created by the build)
+
+| File | Created by | Contents |
+|------|-----------|----------|
+| `lex.yy.c` | `flex shader_final.l` | the scanner `yylex()` in C |
+| `y.tab.c` | `bison -y -d shader.y` | the LALR(1) parser `yyparse()` in C |
+| `y.tab.h` | `bison -y -d shader.y` | token codes (`IDENTIFIER`, `TYPE_NAME`, ...) and `yylval`, shared with the lexer |
+| `y.output` | `bison -v shader.y` (optional) | the parser states, used to confirm there are 0 conflicts |
+| `minic` | `gcc` | the compiler executable |
+
+### 4.5 Test shaders
+
+| File | Purpose |
+|------|---------|
+| `test.frag` | The lit fragment shader from Review 1: structs, uniforms, a loop, if/else, `discard`, swizzles, `texture()`. |
+| `tests/valid/control_flow.frag` | while, do-while, for, switch with `default`, `break`/`continue`, `&&`/`\|\|`, `?:`, `out`/`inout` parameters, overloading, a prototype defined after `main`, arrays, initializer lists, swizzle writes, and shadowing. |
+| `tests/valid/vertex.vert` | A vertex shader: `layout(location = n)`, a uniform block with an instance name, `mat4` products, a `mat3(mat4)` constructor, `gl_Position`, `gl_PointSize`. |
+| `tests/semantic_errors/types.frag` | 11 type errors, one per marked line: vector size mismatch, a bad swizzle, constructor arity, `mat3 * vec4`, a non-bool condition, wrong `texture()` arguments, `%` on float, ... |
+| `tests/semantic_errors/scopes.frag` | 17 errors and 1 warning about names, scopes and qualifiers: redeclarations, undeclared names, writes to a uniform/const/`in`/built-in, `break` outside a loop, an undefined or unmatched function, ... |
+| `tests/semantic_errors/no_main.frag` | A shader without `void main()`. |
+| `tests/syntax_errors/missing_semicolon.frag` | A syntax error, reported with its line number. |
+| `tests/syntax_errors/lexical.frag` | The lexical errors from Review 1: a reserved word, a malformed number, an invalid octal. |
 
 ## 5. Error examples
 
