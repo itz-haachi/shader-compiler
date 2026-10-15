@@ -4,10 +4,8 @@
  *
  * Works together with shader.y (the yacc parser).
  *
- * Build:  lex shader.l
- *         yacc -d shader.y
- *         gcc lex.yy.c y.tab.c -w
- * Run:    ./a.out test.frag
+ * Build:  make                     (see README.md)
+ * Run:    ./minic test.frag
  *
  * Every token is printed as it is recognised (the lexical analysis
  * output) and then returned to the parser.
@@ -15,9 +13,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "ast.h"
 #include "y.tab.h"
 
 int lineno = 1;
+int show_tokens = 1;            /* set to 0 by main.c for --no-tokens */
 int lex_errors = 0;
 char last_lexeme[256] = "";     /* used by yyerror() in shader.y */
 
@@ -161,11 +161,14 @@ struct keyword *lookup_keyword(char *s)
     return 0;
 }
 
-/* print the token, remember it for error messages, and return it */
+/* print the token, remember it for error messages, pass the lexeme
+   to the parser (identifiers, type names, constants) and return it */
 int emit(int tok, char *cls, char *detail)
 {
-    printf("%-5d %-12s %-14s %s\n", lineno, cls, detail ? detail : "", yytext);
+    if (show_tokens)
+        printf("%-5d %-12s %-14s %s\n", lineno, cls, detail ? detail : "", yytext);
     strncpy(last_lexeme, yytext, sizeof(last_lexeme) - 1);
+    yylval.str = strdup(yytext);
     return tok;
 }
 
@@ -190,7 +193,7 @@ FS      ([fF]|lf|LF)
 \n                              { lineno++; }
 "//".*                          ;
 "/*"                            { skip_block_comment(); }
-^[ \t]*"#".*                    { printf("%-5d %-12s %-14s %s\n", lineno, "PREPROCESSOR", "", yytext); }
+^[ \t]*"#".*                    { if (show_tokens) printf("%-5d %-12s %-14s %s\n", lineno, "PREPROCESSOR", "", yytext); }
 
 {D}+"."{D}*{E}?{FS}?            { return emit(FLOATCONST, "CONSTANT", "float"); }
 "."{D}+{E}?{FS}?                { return emit(FLOATCONST, "CONSTANT", "float"); }
