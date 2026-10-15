@@ -67,6 +67,8 @@ To type a shader instead, run `./minic` with no file and finish with Ctrl+D.
 | `--no-symtab` | don't print the symbol table |
 | `--no-quads` | don't print the quadruple table |
 | `--ir-only` | print only the verdicts, errors and three-address code |
+| `--ascii` | draw the AST with `|--` and `` `-- `` instead of box-drawing characters (for terminals without UTF-8) |
+| `--no-color` | don't colour the AST (colour is only used when output goes to a terminal; `NO_COLOR` is also respected) |
 
 Examples:
 
@@ -115,7 +117,45 @@ N semantic error(s), M warning(s)
 Valid shader program
 ```
 
-Excerpt for `test.frag`:
+The typed AST is drawn as a tree. Each child shows its role (`cond:`,
+`then:`, `body:`, `init:`, `target:`, `value:`, `index:`), each expression
+shows its type, and declarations and statements show their source line. On
+a terminal, node kinds, types and roles are shown in colour. Excerpt for
+`test.frag`:
+
+```
+└── Function void main()   [line 26]
+    └── body: Block
+        ├── VarDecl vec3 n   [line 28]
+        │   └── init: Call normalize : vec3
+        │       └── Id vNormal : vec3
+        ...
+        ├── For   [line 33]
+        │   ├── init: VarDecl int i   [line 33]
+        │   │   └── init: Const 0 : int
+        │   ├── cond: Binary < : bool
+        │   │   ├── Id i : int
+        │   │   └── Const 4 : int
+        │   ├── step: Unary ++ : int
+        │   │   └── Id i : int
+        │   └── body: Block
+        │       └── ExprStmt
+        │           └── Assign *= : float
+        │               ├── target: Id diff : float
+        │               └── value: Index [] : float
+        │                   ├── Id uWeights : float[4]
+        │                   └── index: Id i : int
+```
+
+Implicit conversions inserted by the semantic phase appear as their own nodes:
+
+```
+VarDecl float f   [line 3]
+`-- init: ImplicitConv to float
+    `-- Const 1 : int
+```
+
+The symbol table and three-address code for `test.frag`:
 
 ```
 NAME             KIND       TYPE                   QUALIFIERS         SCOPE        DEPTH  LINE
