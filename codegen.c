@@ -19,6 +19,7 @@ static char **pending = 0;
 static char **pending_source = 0;
 static int *pending_ref = 0;
 static int n_pending = 0, cap_pending = 0;
+static const char *current_function = 0;
 
 static char *sdup_codegen(const char *s)
 {
@@ -51,6 +52,7 @@ void codegen_free(void)
     pending_source = 0;
     pending_ref = 0;
     cap_pending = 0;
+    current_function = 0;
 }
 
 static void add_line(const char *text)
@@ -101,7 +103,7 @@ static void add_pending(const char *value, int ref)
 
 static int vector_width_from_type(const char *name)
 {
-    Symbol *s = sym_lookup_ir(name);
+    Symbol *s = sym_lookup_ir_scope(name, current_function);
     if (s && is_vector(s->type))
         return s->type.vec;
     return 0;
@@ -178,8 +180,10 @@ static void emit_constructor(Quad *q)
     else if (!strcmp(type, "mat2")) inst = "MAT2";
     else if (!strcmp(type, "mat3")) inst = "MAT3";
     else if (!strcmp(type, "mat4")) inst = "MAT4";
-    if (!inst) inst = "CONSTRUCT";
-    sprintf(buf, "%s %s", inst, operand(q->result));
+    if (!inst)
+        sprintf(buf, "CONSTRUCT %s, %s", type, operand(q->result));
+    else
+        sprintf(buf, "%s %s", inst, operand(q->result));
     for (i = 0; i < n_pending; i++) {
         strcat(buf, i == 0 ? ", " : ", ");
         strcat(buf, pending[i]);
@@ -244,11 +248,15 @@ static void emit_quad(Quad *q)
         clear_pending();
     }
 
-    if (!strcmp(q->op, "func")) sprintf(buf, "FUNC %s", q->arg1);
+    if (!strcmp(q->op, "func")) {
+        current_function = q->arg1;
+        sprintf(buf, "FUNC %s", q->arg1);
+    }
     else if (!strcmp(q->op, "endfunc")) {
         if (n_lines == 0 || strncmp(lines[n_lines - 1], "RET", 3) != 0)
             add_line("RET");
         sprintf(buf, "END %s", q->arg1);
+        current_function = 0;
     }
     else if (!strcmp(q->op, "label")) sprintf(buf, "LABEL %s", q->result);
     else if (!strcmp(q->op, "goto")) sprintf(buf, "JMP %s", q->result);
@@ -265,9 +273,9 @@ static void emit_quad(Quad *q)
     else if (!strcmp(q->op, "swizzle") || !strcmp(q->op, "member"))
         sprintf(buf, "MOV %s, %s.%s", res, a1, q->arg2);
     else if (!strcmp(q->op, "swizzle=") || !strcmp(q->op, "member="))
-        sprintf(buf, "MOV %s.%s, %s", q->result, q->arg2, a1);
+        sprintf(buf, "MOV %s.%s, %s", res, q->arg2, a1);
     else if (!strcmp(q->op, "[]")) sprintf(buf, "LOADIDX %s, %s, %s", res, a1, a2);
-    else if (!strcmp(q->op, "[]=")) sprintf(buf, "STOREIDX %s, %s, %s", q->result, a2, a1);
+    else if (!strcmp(q->op, "[]=")) sprintf(buf, "STOREIDX %s, %s, %s", res, a2, a1);
     else if (!strcmp(q->op, "length")) sprintf(buf, "ARRAYLEN %s, %s", res, a1);
     else if ((inst = comparison_instruction(q->op)) != 0)
         sprintf(buf, "%s %s, %s, %s", inst, res, a1, a2);

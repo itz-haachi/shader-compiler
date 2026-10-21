@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "optimizer.h"
+#include "symtab.h"
 
 Quad *optimized_quads = 0;
 int n_optimized_quads = 0;
@@ -85,6 +86,8 @@ void optimizer_free(void)
 
 /* ---------------- scalar constants ---------------- */
 
+#define UINT_MASK 0xffffffffULL
+
 enum { CV_NONE, CV_INT, CV_UINT, CV_FLOAT, CV_BOOL };
 
 typedef struct {
@@ -92,13 +95,31 @@ typedef struct {
     long long i;
     unsigned long long u;
     double f;
+    int float32;
     int b;
 } ConstValue;
 
+static long long normalize_int32(long long value)
+{
+    unsigned long long bits = (unsigned long long)value & UINT_MASK;
+    return (bits & 0x80000000ULL) ? (long long)(bits - 0x100000000ULL)
+                                  : (long long)bits;
+}
+
 static int is_float_text(const char *s)
 {
-    return strchr(s, '.') || strchr(s, 'e') || strchr(s, 'E') ||
-           strchr(s, 'f') || strchr(s, 'F') || strchr(s, 'l') || strchr(s, 'L');
+    size_t len = strlen(s);
+    int hex_integer = len >= 2 && s[0] == '0' &&
+                      (s[1] == 'x' || s[1] == 'X');
+    if (hex_integer)
+        return 0;
+    if (strchr(s, '.') || strchr(s, 'e') || strchr(s, 'E'))
+        return 1;
+    if (len > 0 &&
+        (s[len - 1] == 'f' || s[len - 1] == 'F' ||
+         s[len - 1] == 'l' || s[len - 1] == 'L'))
+        return 1;
+    return 0;
 }
 
 static int parse_constant(const char *s, ConstValue *out)
@@ -120,7 +141,7 @@ static int parse_constant(const char *s, ConstValue *out)
     tmp = sdup(s);
     if (len > 0 && (tmp[len - 1] == 'u' || tmp[len - 1] == 'U')) {
         tmp[len - 1] = '\0';
-        out->u = strtoull(tmp, &end, 0);
+        out->u = strtoull(tmp, &end, 0) & UINT_MASK;
         if (*tmp && *end == '\0') {
             out->kind = CV_UINT;
             free(tmp);
@@ -131,6 +152,10 @@ static int parse_constant(const char *s, ConstValue *out)
     }
 
     if (is_float_text(s)) {
+        int double_literal = len > 0 &&
+            (tmp[len - 1] == 'l' || tmp[len - 1] == 'L' ||
+             (len >= 2 && (tmp[len - 2] == 'l' || tmp[len - 2] == 'L') &&
+              (tmp[len - 1] == 'f' || tmp[len - 1] == 'F')));
         if (len >= 2 && (tmp[len - 2] == 'l' || tmp[len - 2] == 'L')
             && (tmp[len - 1] == 'f' || tmp[len - 1] == 'F'))
             tmp[len - 2] = '\0';
@@ -140,6 +165,9 @@ static int parse_constant(const char *s, ConstValue *out)
         out->f = strtod(tmp, &end);
         if (*tmp && *end == '\0') {
             out->kind = CV_FLOAT;
+            out->float32 = !double_literal;
+            if (out->float32)
+                out->f = (double)(float)out->f;
             free(tmp);
             return 1;
         }
@@ -147,7 +175,7 @@ static int parse_constant(const char *s, ConstValue *out)
         return 0;
     }
 
-    out->i = strtoll(tmp, &end, 0);
+    out->i = normalize_int32(strtoll(tmp, &end, 0));
     if (*tmp && *end == '\0') {
         out->kind = CV_INT;
         free(tmp);
@@ -162,14 +190,14 @@ static char *format_constant(ConstValue v)
     char buf[128];
     switch (v.kind) {
     case CV_INT:
-        sprintf(buf, "%lld", v.i);
+        sprintf(buf, "%lld", normalize_int32(v.i));
         break;
     case CV_UINT:
-        sprintf(buf, "%llu", v.u);
+        sprintf(buf, "%llu", v.u & UINT_MASK);
         strcat(buf, "u");
         break;
     case CV_FLOAT:
-        sprintf(buf, "%.9g", v.f);
+        sprintf(buf, v.float32 ? "%.9g" : "%.17g", v.f);
         if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E'))
             strcat(buf, ".0");
         break;
@@ -288,6 +316,19 @@ static void propagate_operands(Quad *q)
         propagate_field(&q->arg2);
 }
 
+static long long signed_shift_right32(long long value, unsigned long long count)
+{
+    unsigned long long bits;
+    if (count >= 32)
+        return value < 0 ? -1 : 0;
+    if (value >= 0)
+        return (long long)((unsigned long long)value >> count);
+    bits = ((unsigned long long)value & UINT_MASK) >> count;
+    if (count)
+        bits |= UINT_MASK << (32 - count);
+    return normalize_int32((long long)bits);
+}
+
 static int fold_binary(Quad *q)
 {
     ConstValue a, b, r;
@@ -316,8 +357,8 @@ static int fold_binary(Quad *q)
             else if (!strcmp(q->op, "==")) r.b = a.f == b.f;
             else r.b = a.f != b.f;
         } else if (a.kind == CV_UINT || b.kind == CV_UINT) {
-            unsigned long long x = a.kind == CV_UINT ? a.u : (unsigned long long)a.i;
-            unsigned long long y = b.kind == CV_UINT ? b.u : (unsigned long long)b.i;
+            unsigned long long x = a.kind == CV_UINT ? a.u : ((unsigned long long)a.i & UINT_MASK);
+            unsigned long long y = b.kind == CV_UINT ? b.u : ((unsigned long long)b.i & UINT_MASK);
             if (!strcmp(q->op, "<")) r.b = x < y;
             else if (!strcmp(q->op, ">")) r.b = x > y;
             else if (!strcmp(q->op, "<=")) r.b = x <= y;
@@ -351,39 +392,59 @@ static int fold_binary(Quad *q)
         else if (!strcmp(q->op, "*")) r.f = x * y;
         else if (!strcmp(q->op, "/")) r.f = x / y;
         else return 0;
+        r.float32 = (a.kind == CV_FLOAT && a.float32) ||
+                    (b.kind == CV_FLOAT && b.float32);
+        if (r.float32)
+            r.f = (double)(float)r.f;
     } else {
-        int is_uint = a.kind == CV_UINT || b.kind == CV_UINT;
-        unsigned long long ux = a.kind == CV_UINT ? a.u : (unsigned long long)a.i;
-        unsigned long long uy = b.kind == CV_UINT ? b.u : (unsigned long long)b.i;
+        int is_shift = strcmp(q->op, "<<") == 0 || strcmp(q->op, ">>") == 0;
+        /* GLSL shift result type follows the left operand.  Other integer
+         * operators use the usual int/uint promotion represented by the IR. */
+        int is_uint = is_shift ? a.kind == CV_UINT
+                               : (a.kind == CV_UINT || b.kind == CV_UINT);
+        unsigned long long ux = a.kind == CV_UINT ? a.u : ((unsigned long long)a.i & UINT_MASK);
+        unsigned long long uy = b.kind == CV_UINT ? b.u : ((unsigned long long)b.i & UINT_MASK);
         if (strcmp(q->op, "/") == 0 && uy == 0)
             return 0;
         if (strcmp(q->op, "%") == 0 && uy == 0)
             return 0;
         if (is_uint) {
             r.kind = CV_UINT;
-            if (!strcmp(q->op, "+")) r.u = ux + uy;
-            else if (!strcmp(q->op, "-")) r.u = ux - uy;
-            else if (!strcmp(q->op, "*")) r.u = ux * uy;
-            else if (!strcmp(q->op, "/")) r.u = ux / uy;
-            else if (!strcmp(q->op, "%")) r.u = ux % uy;
-            else if (!strcmp(q->op, "&")) r.u = ux & uy;
-            else if (!strcmp(q->op, "|")) r.u = ux | uy;
-            else if (!strcmp(q->op, "^")) r.u = ux ^ uy;
-            else if (!strcmp(q->op, "<<")) { if (uy >= 64) return 0; r.u = ux << uy; }
-            else if (!strcmp(q->op, ">>")) { if (uy >= 64) return 0; r.u = ux >> uy; }
+            if (!strcmp(q->op, "+")) r.u = (ux + uy) & UINT_MASK;
+            else if (!strcmp(q->op, "-")) r.u = (ux - uy) & UINT_MASK;
+            else if (!strcmp(q->op, "*")) r.u = (ux * uy) & UINT_MASK;
+            else if (!strcmp(q->op, "/")) r.u = (ux / uy) & UINT_MASK;
+            else if (!strcmp(q->op, "%")) r.u = (ux % uy) & UINT_MASK;
+            else if (!strcmp(q->op, "&")) r.u = (ux & uy) & UINT_MASK;
+            else if (!strcmp(q->op, "|")) r.u = (ux | uy) & UINT_MASK;
+            else if (!strcmp(q->op, "^")) r.u = (ux ^ uy) & UINT_MASK;
+            else if (!strcmp(q->op, "<<")) { if (uy >= 32) return 0; r.u = (ux << uy) & UINT_MASK; }
+            else if (!strcmp(q->op, ">>")) { if (uy >= 32) return 0; r.u = (ux >> uy) & UINT_MASK; }
             else return 0;
         } else {
+            unsigned long long shift = b.kind == CV_UINT ? b.u
+                                                          : (unsigned long long)b.i;
             r.kind = CV_INT;
-            if (!strcmp(q->op, "+")) r.i = a.i + b.i;
-            else if (!strcmp(q->op, "-")) r.i = a.i - b.i;
-            else if (!strcmp(q->op, "*")) r.i = a.i * b.i;
-            else if (!strcmp(q->op, "/")) r.i = a.i / b.i;
-            else if (!strcmp(q->op, "%")) r.i = a.i % b.i;
-            else if (!strcmp(q->op, "&")) r.i = a.i & b.i;
-            else if (!strcmp(q->op, "|")) r.i = a.i | b.i;
-            else if (!strcmp(q->op, "^")) r.i = a.i ^ b.i;
-            else if (!strcmp(q->op, "<<")) { if (b.i < 0 || b.i >= 63) return 0; r.i = a.i << b.i; }
-            else if (!strcmp(q->op, ">>")) { if (b.i < 0 || b.i >= 63) return 0; r.i = a.i >> b.i; }
+            if (!strcmp(q->op, "+")) r.i = normalize_int32(a.i + b.i);
+            else if (!strcmp(q->op, "-")) r.i = normalize_int32(a.i - b.i);
+            else if (!strcmp(q->op, "*")) r.i = normalize_int32(a.i * b.i);
+            else if (!strcmp(q->op, "/")) {
+                if (a.i == -2147483648LL && b.i == -1)
+                    return 0;
+                r.i = normalize_int32(a.i / b.i);
+            }
+            else if (!strcmp(q->op, "%")) r.i = normalize_int32(a.i % b.i);
+            else if (!strcmp(q->op, "&")) r.i = normalize_int32(a.i & b.i);
+            else if (!strcmp(q->op, "|")) r.i = normalize_int32(a.i | b.i);
+            else if (!strcmp(q->op, "^")) r.i = normalize_int32(a.i ^ b.i);
+            else if (!strcmp(q->op, "<<")) {
+                if (shift >= 32) return 0;
+                r.i = normalize_int32((long long)(((unsigned long long)a.i & UINT_MASK) << shift));
+            }
+            else if (!strcmp(q->op, ">>")) {
+                if (shift >= 32) return 0;
+                r.i = signed_shift_right32(a.i, shift);
+            }
             else return 0;
         }
     }
@@ -405,12 +466,15 @@ static int fold_unary(Quad *q)
         if (a.kind != CV_BOOL) return 0;
         r.kind = CV_BOOL; r.b = !a.b;
     } else if (strcmp(q->op, "minus") == 0) {
-        if (a.kind == CV_FLOAT) { r.kind = CV_FLOAT; r.f = -a.f; }
-        else if (a.kind == CV_INT) { r.kind = CV_INT; r.i = -a.i; }
+        if (a.kind == CV_FLOAT) {
+            r.kind = CV_FLOAT; r.f = -a.f; r.float32 = a.float32;
+            if (r.float32) r.f = (double)(float)r.f;
+        }
+        else if (a.kind == CV_INT) { r.kind = CV_INT; r.i = normalize_int32(-a.i); }
         else return 0;
     } else if (strcmp(q->op, "~") == 0) {
-        if (a.kind == CV_UINT) { r.kind = CV_UINT; r.u = ~a.u; }
-        else if (a.kind == CV_INT) { r.kind = CV_INT; r.i = ~a.i; }
+        if (a.kind == CV_UINT) { r.kind = CV_UINT; r.u = (~a.u) & UINT_MASK; }
+        else if (a.kind == CV_INT) { r.kind = CV_INT; r.i = normalize_int32(~a.i); }
         else return 0;
     } else {
         return 0;
@@ -439,15 +503,18 @@ static int fold_conversion(Quad *q)
         else if (a.kind == CV_UINT) r.f = (double)a.u;
         else if (a.kind == CV_INT) r.f = (double)a.i;
         else return 0;
+        r.float32 = target.base == TY_FLOAT;
+        if (r.float32)
+            r.f = (double)(float)r.f;
     } else if (target.base == TY_UINT) {
         r.kind = CV_UINT;
-        if (a.kind == CV_UINT) r.u = a.u;
-        else if (a.kind == CV_INT) r.u = (unsigned long long)a.i;
+        if (a.kind == CV_UINT) r.u = a.u & UINT_MASK;
+        else if (a.kind == CV_INT) r.u = (unsigned long long)a.i & UINT_MASK;
         else return 0;
     } else if (target.base == TY_INT) {
         r.kind = CV_INT;
         if (a.kind == CV_INT) r.i = a.i;
-        else if (a.kind == CV_UINT) r.i = (long long)a.u;
+        else if (a.kind == CV_UINT) r.i = normalize_int32((long long)a.u);
         else return 0;
     } else if (target.base == TY_BOOL) {
         r.kind = CV_BOOL;
@@ -547,6 +614,15 @@ static int expression_mentions(Expression *e, const char *name)
            strcmp(e->arg2, name) == 0;
 }
 
+/* A self-updating expression uses the value being overwritten as an input.
+ * It must not be cached for later CSE, because the cached result would refer
+ * to the old value of that name rather than the newly computed value. */
+static int expression_self_referential(Quad *q)
+{
+    return q->result[0] &&
+           (!strcmp(q->result, q->arg1) || !strcmp(q->result, q->arg2));
+}
+
 static void expressions_invalidate(const char *name)
 {
     int i, j;
@@ -601,10 +677,11 @@ static void cse_pass(void)
         for (j = 0; j < n_expressions; j++)
             if (expression_matches(&expressions[j], q))
                 break;
-        if (j < n_expressions && strcmp(expressions[j].result, q->result) != 0) {
+        if (!expression_self_referential(q) &&
+            j < n_expressions && strcmp(expressions[j].result, q->result) != 0) {
             replace_quad_as_copy(q, expressions[j].result);
             optimization_cse_eliminated++;
-        } else {
+        } else if (!expression_self_referential(q)) {
             expressions_add(q);
         }
     }
@@ -633,26 +710,51 @@ static int literal_is_one(const char *text, int *is_uint)
     return 0;
 }
 
+static int known_uint_operand(const char *text, const char *scope_name)
+{
+    Symbol *s = sym_lookup_ir_scope(text, scope_name);
+    return s && s->type.base == TY_UINT && s->type.arr == 0;
+}
+
+static int unsigned_expression(Quad *q, const char *scope_name)
+{
+    return known_uint_operand(q->arg1, scope_name) ||
+           known_uint_operand(q->result, scope_name);
+}
+
 static void strength_reduction_pass(void)
 {
     int i, u1, u2;
+    const char *scope_name = 0;
     for (i = 0; i < n_optimized_quads; i++) {
         Quad *q = &optimized_quads[i];
-        if (strcmp(q->op, "*") == 0 && literal_is_two(q->arg2, &u2) && u2) {
+        if (strcmp(q->op, "func") == 0) {
+            scope_name = q->arg1;
+            continue;
+        }
+        if (strcmp(q->op, "endfunc") == 0) {
+            scope_name = 0;
+            continue;
+        }
+        if (strcmp(q->op, "*") == 0 && literal_is_two(q->arg2, &u2) && u2 &&
+            unsigned_expression(q, scope_name)) {
             /* Unsigned x * 2 and x + x have the same modulo arithmetic. */
             replace_field(&q->op, "+");
             replace_field(&q->arg2, q->arg1);
             optimization_strength_reductions++;
-        } else if (strcmp(q->op, "*") == 0 && literal_is_two(q->arg1, &u1) && u1) {
+        } else if (strcmp(q->op, "*") == 0 && literal_is_two(q->arg1, &u1) && u1 &&
+                   unsigned_expression(q, scope_name)) {
             replace_field(&q->op, "+");
             replace_field(&q->arg1, q->arg2);
             optimization_strength_reductions++;
-        } else if (strcmp(q->op, "<<") == 0 && literal_is_one(q->arg2, &u2) && u2) {
+        } else if (strcmp(q->op, "<<") == 0 && literal_is_one(q->arg2, &u2) && u2 &&
+                   unsigned_expression(q, scope_name)) {
             /* Unsigned x << 1 and x * 2 have the same modulo arithmetic. */
             replace_field(&q->op, "*");
             replace_field(&q->arg2, u2 ? "2u" : "2");
             optimization_strength_reductions++;
-        } else if (strcmp(q->op, "/") == 0 && strcmp(q->arg2, "2u") == 0) {
+        } else if (strcmp(q->op, "/") == 0 && strcmp(q->arg2, "2u") == 0 &&
+                   unsigned_expression(q, scope_name)) {
             /* Unsigned division by two is exactly an unsigned right shift. */
             replace_field(&q->op, ">>");
             replace_field(&q->arg2, "1u");
@@ -685,8 +787,12 @@ static int pure_temp_instruction(Quad *q)
 
 static void count_use(char *name, int *uses)
 {
-    if (is_temp_name(name))
-        uses[atoi(name + 1)]++;
+    int index;
+    if (!is_temp_name(name))
+        return;
+    index = atoi(name + 1);
+    if (index >= 0 && index < 1024)
+        uses[index]++;
 }
 
 static void dead_code_pass(void)

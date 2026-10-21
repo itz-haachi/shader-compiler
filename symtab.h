@@ -63,6 +63,7 @@ void    set_scope_name(char *name);
 Symbol *sym_lookup(const char *name);
 Symbol *sym_lookup_current(const char *name);
 Symbol *sym_lookup_ir(const char *irname);
+Symbol *sym_lookup_ir_scope(const char *irname, const char *scope_name);
 Symbol *sym_insert(char *name, SymKind kind, Type type, int quals, int line);
 
 Symbol *func_insert(char *name, Type ret, int nparams, Type *ptypes, int *pquals, int line);
