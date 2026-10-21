@@ -80,6 +80,7 @@ check_c_compiles() {   # check_c_compiles <file> <label>
 
 check test.frag 0
 check test1.frag 0
+check test2.frag 0
 for f in tests/valid/*;           do check "$f" 0; done
 for f in tests/semantic_errors/*; do check "$f" 1; done
 for f in tests/syntax_errors/*;   do check "$f" 1; done
@@ -94,6 +95,13 @@ check_contains test1.frag "Constant propagations         : 1" "demo constant pro
 check_contains test1.frag "Common subexpressions removed : 1" "demo common subexpression elimination"
 check_contains test1.frag "Strength reductions           : 2" "demo strength reduction"
 check_contains test1.frag "Dead instructions removed     : 36" "demo dead code elimination"
+check_contains test2.frag "Original instructions  : 28" "test2 original instruction count"
+check_contains test2.frag "Optimized instructions : 16" "test2 optimized instruction count"
+check_contains test2.frag "Constant folds                : 2" "test2 constant folds"
+check_contains test2.frag "Constant propagations         : 1" "test2 constant propagation"
+check_contains test2.frag "Common subexpressions removed : 1" "test2 common subexpression elimination"
+check_contains test2.frag "Strength reductions           : 2" "test2 strength reduction"
+check_contains test2.frag "Dead instructions removed     : 12" "test2 dead code elimination"
 check_contains tests/optimizer_codegen/constant_propagation.frag "b = 5.0" "constant propagation"
 check_contains tests/optimizer_codegen/constant_types.frag "value = 3u" "typed integer constant folding"
 check_contains tests/optimizer_codegen/constant_types.frag "flag = false" "boolean constant folding"
