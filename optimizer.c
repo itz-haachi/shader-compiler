@@ -719,7 +719,7 @@ static int known_uint_operand(const char *text, const char *scope_name)
 static int unsigned_expression(Quad *q, const char *scope_name)
 {
     return known_uint_operand(q->arg1, scope_name) ||
-           known_uint_operand(q->result, scope_name);
+           known_uint_operand(q->arg2, scope_name);
 }
 
 static void strength_reduction_pass(void)

@@ -78,6 +78,7 @@ check_contains tests/optimizer_codegen/strength_reduction.frag "doubled = inputV
 check_contains tests/optimizer_codegen/cse.frag "second = first" "common subexpression elimination"
 check_contains tests/optimizer_codegen/cse_self_update.frag "ADD result, a, rightValue" "CSE preserves self-updating operands"
 check_contains tests/optimizer_codegen/uint_not.frag "result = 4294967295u" "32-bit unsigned unary folding"
+check_contains tests/optimizer_codegen/uint_wrap.frag "result = 0u" "32-bit unsigned arithmetic wrapping"
 check_contains tests/optimizer_codegen/dot_scope.frag "DP4 result, v, w" "function-scoped dot specialization"
 check_not_contains tests/optimizer_codegen/dead_temp.frag "ADD" "dead temporary elimination" --target-only
 check_contains tests/optimizer_codegen/vector_backend.frag "ADD sum, leftVector, rightVector" "vector ADD target instruction"
@@ -101,6 +102,7 @@ check_contains tests/optimizer_codegen/for_loop.frag "JMP L1" "for-loop target j
 check_contains tests/optimizer_codegen/division_by_zero.frag "DIV value, 5, 0" "division by zero remains unfurled"
 check_contains tests/optimizer_codegen/unsafe_float_strength.frag "Strength reductions           : 0" "unsafe float strength reduction rejected"
 check_contains tests/optimizer_codegen/signed_shift.frag "SHL result, inputValue, 1u" "signed shift strength reduction rejected"
+check_contains tests/optimizer_codegen/signed_shift_constant.frag "result = -4" "signed shift constant semantics"
 check_contains tests/optimizer_codegen/constant_folding.frag "ADD a, 2.0, 3.0" "--no-opt preserves original arithmetic" --no-opt --target-only
 check_not_contains tests/optimizer_codegen/constant_folding.frag "TARGET CODE" "--no-target suppresses assembly" --no-target
 check_not_contains tests/optimizer_codegen/constant_folding.frag "TARGET CODE" "--ir-only suppresses assembly" --ir-only
