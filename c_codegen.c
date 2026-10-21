@@ -58,6 +58,124 @@ static void cgen_linef(const char *format, ...)
     cgen_line(buffer);
 }
 
+static void cgen_append_last(const char *suffix)
+{
+    size_t old_len, add_len;
+    char *grown;
+    if (n_source_lines == 0 || !suffix)
+        return;
+    old_len = strlen(source_lines[n_source_lines - 1]);
+    add_len = strlen(suffix);
+    grown = (char *)realloc(source_lines[n_source_lines - 1], old_len + add_len + 1);
+    if (!grown)
+        return;
+    memcpy(grown + old_len, suffix, add_len + 1);
+    source_lines[n_source_lines - 1] = grown;
+}
+
+static void cgen_runtime_indented(const char *text, int indent)
+{
+    char prefix[128];
+    int spaces = indent * 4;
+    while (text && isspace((unsigned char)*text))
+        text++;
+    if (spaces < 0)
+        spaces = 0;
+    if (spaces > (int)sizeof(prefix) - 1)
+        spaces = (int)sizeof(prefix) - 1;
+    memset(prefix, ' ', (size_t)spaces);
+    prefix[spaces] = '\0';
+    cgen_linef("%s%s", prefix, text ? text : "");
+}
+
+/* Split a compact runtime helper at C statement and brace boundaries. */
+static void cgen_runtime_text(const char *text)
+{
+    char token[4096];
+    int length = 0;
+    int indent = 0;
+    int paren_depth = 0;
+    int in_string = 0;
+    int escaped = 0;
+    int closed_brace = 0;
+    size_t i;
+
+    if (!text || !*text) {
+        cgen_line("");
+        return;
+    }
+    for (i = 0; text[i]; i++) {
+        char ch = text[i];
+        if (in_string) {
+            if (length < (int)sizeof(token) - 1)
+                token[length++] = ch;
+            if (ch == '"' && !escaped)
+                in_string = 0;
+            escaped = ch == '\\' && !escaped;
+            continue;
+        }
+        if (ch == '"') {
+            in_string = 1;
+            if (length < (int)sizeof(token) - 1)
+                token[length++] = ch;
+        } else if (ch == '(') {
+            paren_depth++;
+            if (length < (int)sizeof(token) - 1)
+                token[length++] = ch;
+        } else if (ch == ')') {
+            if (paren_depth > 0)
+                paren_depth--;
+            if (length < (int)sizeof(token) - 1)
+                token[length++] = ch;
+        } else if (ch == '{') {
+            while (length > 0 && isspace((unsigned char)token[length - 1]))
+                length--;
+            token[length++] = ' ';
+            token[length++] = '{';
+            token[length] = '\0';
+            cgen_runtime_indented(token, indent);
+            length = 0;
+            indent++;
+            closed_brace = 0;
+        } else if (ch == '}') {
+            while (length > 0 && isspace((unsigned char)token[length - 1]))
+                length--;
+            token[length] = '\0';
+            if (length > 0) {
+                cgen_runtime_indented(token, indent);
+                length = 0;
+            }
+            if (indent > 0)
+                indent--;
+            cgen_runtime_indented("}", indent);
+            closed_brace = 1;
+        } else if (ch == ';' && paren_depth == 0) {
+            if (length == 0 && closed_brace) {
+                cgen_append_last(";");
+                closed_brace = 0;
+                continue;
+            }
+            if (length < (int)sizeof(token) - 1)
+                token[length++] = ch;
+            token[length] = '\0';
+            while (length > 0 && isspace((unsigned char)token[length - 1]))
+                token[--length] = '\0';
+            if (length > 0)
+                cgen_runtime_indented(token, indent);
+            length = 0;
+            closed_brace = 0;
+        } else if (length < (int)sizeof(token) - 1) {
+            token[length++] = ch;
+            closed_brace = 0;
+        }
+    }
+    while (length > 0 && isspace((unsigned char)token[length - 1]))
+        token[--length] = '\0';
+    token[length] = '\0';
+    if (length > 0)
+        cgen_runtime_indented(token, indent);
+}
+
 void c_codegen_free(void)
 {
     int i;
@@ -390,7 +508,7 @@ static void emit_runtime(void)
     };
     int i;
     for (i = 0; runtime[i]; i++)
-        cgen_line(runtime[i]);
+        cgen_runtime_text(runtime[i]);
 }
 
 typedef struct {

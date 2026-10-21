@@ -111,6 +111,7 @@ check_contains tests/optimizer_codegen/dot_scope.frag "DP4 result, v, w" "functi
 check_not_contains tests/optimizer_codegen/dead_temp.frag "ADD" "dead temporary elimination" --target-only
 check_contains tests/optimizer_codegen/vector_backend.frag "ADD sum, leftVector, rightVector" "vector ADD target instruction"
 check_contains tests/optimizer_codegen/vector_backend.frag "static MGValue" "standalone C runtime"
+check_contains tests/optimizer_codegen/vector_backend.frag "    return mg_arith(a, b, 0);" "formatted C runtime statements"
 check_contains tests/optimizer_codegen/vector_backend.frag "v_sum = mg_add(v_leftVector, v_rightVector);" "C vector arithmetic lowering"
 check_contains tests/optimizer_codegen/function_call.frag "v_result = shader_twice" "C user function call lowering"
 check_contains tests/optimizer_codegen/swizzle_write.frag "mg_swizzle_set" "C swizzle write lowering"
