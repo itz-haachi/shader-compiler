@@ -79,6 +79,17 @@ Symbol *sym_lookup(const char *name)
     return 0;
 }
 
+Symbol *sym_lookup_ir(const char *irname)
+{
+    Symbol *s;
+    if (!irname)
+        return 0;
+    for (s = sym_log; s; s = s->log_next)
+        if (s->irname && strcmp(s->irname, irname) == 0)
+            return s;
+    return 0;
+}
+
 /* pick a unique IR name: x, then x_1, x_2 ... for shadowing declarations */
 static char *make_irname(char *name)
 {

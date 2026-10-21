@@ -2,7 +2,8 @@
 
 MiniGLSL compiles a subset of **GLSL**, the OpenGL shading language, using
 **lex + yacc + C**. The compiler prints the result of every phase, so you can
-follow a shader from its tokens to three-address code.
+follow a shader from its tokens to optimized three-address code and readable
+educational vector assembly.
 
 | # | Phase | Files | Status |
 |---|-------|-------|--------|
@@ -10,8 +11,8 @@ follow a shader from its tokens to three-address code.
 | 2 | Syntax analysis, now builds an AST | `shader.y`, `ast.c`, `ast.h` | done (extended on this branch) |
 | 3 | Semantic analysis: scoped symbol table and type checking | `semantic.c`, `symtab.c`, `types.c` | **done on this branch** |
 | 4 | Intermediate code: three-address code as quadruples | `icg.c` | **done on this branch** |
-| 5 | Optimization | – | planned (final review) |
-| 6 | Target code (vector assembly) | – | planned (final review) |
+| 5 | Optimization | `optimizer.c`, `optimizer.h` | **done** |
+| 6 | Target code (vector assembly) | `codegen.c`, `codegen.h` | **done** |
 
 ---
 
@@ -47,7 +48,7 @@ Or run the steps by hand (equivalent to Review 1, plus the new C files):
 ```bash
 bison -y -d shader.y          # or: yacc -d shader.y   -> y.tab.c, y.tab.h
 flex shader_final.l           # or: lex shader_final.l -> lex.yy.c
-gcc -w -o minic lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c main.c
+gcc -w -o minic lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c optimizer.c codegen.c main.c
 ```
 
 Each of these produces the executable `./minic`.
@@ -67,6 +68,9 @@ To type a shader instead, run `./minic` with no file and finish with Ctrl+D.
 | `--no-symtab` | don't print the symbol table |
 | `--no-quads` | don't print the quadruple table |
 | `--ir-only` | print only the verdicts, errors and three-address code |
+| `--no-opt` | keep the original TAC for target generation and report zero optimization changes |
+| `--no-target` | suppress the target vector assembly section |
+| `--target-only` | validate all earlier phases but print only target assembly and the final verdict |
 | `--ascii` | draw the AST with `|--` and `` `-- `` instead of box-drawing characters (for terminals without UTF-8) |
 | `--no-color` | don't colour the AST (colour is only used when output goes to a terminal; `NO_COLOR` is also respected) |
 
@@ -114,6 +118,10 @@ N semantic error(s), M warning(s)
 ========== INTERMEDIATE CODE (three-address code) ==========
 ---------- Quadruples ----------             the same code as an (op, arg1, arg2, result) table
 ---------- Temporaries ----------            the type of every temporary (t1 : vec3, ...)
+========== OPTIMIZATION ==========
+---------- Optimized TAC ----------          transformed Quad IR plus actual pass statistics
+========== TARGET CODE ==========
+---------- Vector Assembly ----------        deterministic educational vector instructions
 Valid shader program
 ```
 
@@ -313,6 +321,31 @@ Translation schemes:
   renumbered afterwards so the numbers have no gaps. This is not
   optimization; constant folding, CSE and dead-code elimination are
   phase 5.
+
+### Phase 5: optimization (`optimizer.c`)
+
+The optimizer deep-copies `quads[]` into `optimized_quads[]`, preserving the
+original TAC for comparison. It performs conservative scalar constant
+propagation and folding, basic-block common-subexpression elimination, safe
+unsigned-integer strength reduction, and dead temporary removal. It clears state at
+control-flow and side-effect boundaries, so assignments inside an `if`, loop,
+call, or output store cannot incorrectly leak a constant.
+
+The optimization report includes actual counts for constant folds,
+propagations, common subexpressions, strength reductions, and dead
+instructions. `--no-opt` keeps the copied IR unchanged while still allowing
+the target backend to run.
+
+### Phase 6: target code generation (`codegen.c`)
+
+The backend consumes only `optimized_quads` and maps `t1`, `t2`, ...
+deterministically to `R0`, `R1`, .... It emits readable vector-machine
+pseudo-instructions such as `ADD`, `MUL`, `CMP_*`, `JMP`, `LABEL`, `VEC2`--`VEC4`,
+`MAT2`--`MAT4`, `TEX`, `NORM`, `LEN`, `LOADIDX`, `STOREIDX`, `CALL`, `RET`, and
+`DISCARD`. Arithmetic remains vector-aware and element-wise; this output is an
+educational assembly notation, not vendor GPU machine code. Runtime array
+length (`length` Quad) is emitted as `ARRAYLEN`, distinct from the GLSL vector
+length built-in (`LEN`).
 
 ---
 
@@ -528,19 +561,40 @@ Translation schemes:
     the temporary numbers.
   * `icg_print_tac()`, `icg_print_quads()` and `icg_print_temps()` print
     the three sections of the phase 4 output.
-* The quadruple array `quads[]` / `n_quads` is the input for the
-  planned optimization and target code phases.
+* The quadruple array `quads[]` / `n_quads` is the input for the optimizer;
+  target generation consumes the optimizer's `optimized_quads[]` copy.
+
+#### `optimizer.h` / `optimizer.c`: optimizer (phase 5)
+
+* **Role:** transforms a private copy of the Phase 4 Quad array while keeping
+  the original TAC available for comparison.
+* **What it does:** constant propagation and folding, basic-block CSE, safe
+  integer strength reduction, and conservative dead temporary elimination.
+  State is cleared around control-flow, calls, reference arguments, returns,
+  discard, and aggregate stores.
+* **Output:** `optimized_quads[]`, actual pass statistics, optimized TAC, and
+  an optimized quadruple table.
+
+#### `codegen.h` / `codegen.c`: vector target generator (phase 6)
+
+* **Role:** translates only `optimized_quads[]` into deterministic educational
+  vector assembly.
+* **What it does:** maps `tN` to `RN`, emits arithmetic/comparison/control
+  flow, vector and matrix constructors, swizzles, indexing, conversions,
+  calls, `TEX`, `NORM`, `LEN`, `DISCARD`, `RET`, and function boundaries.
+  It buffers constructor and call parameters so the output remains readable.
 
 #### `main.c`: compiler driver
 
 * **Role:** the program's `main()`, which runs the phases in order.
 * **What it does:**
   * Reads the command-line options (`--no-tokens`, `--no-ast`,
-    `--no-symtab`, `--no-quads`, `--ir-only`, `--ascii`, `--no-color`).
+    `--no-symtab`, `--no-quads`, `--ir-only`, `--no-opt`, `--no-target`,
+    `--target-only`, `--ascii`, `--no-color`).
   * Opens the input file, or reads from stdin.
   * Runs `yyparse()` (phases 1 and 2), then `semantic_analyze()`
-    (phase 3), then `icg_generate()` (phase 4), and prints each phase's
-    section.
+    (phase 3), `icg_generate()` (phase 4), `optimize_ir()` (phase 5),
+    and `codegen_generate()` (phase 6), printing each enabled section.
   * Stops at the first phase that reports errors and prints the verdict
     (`Valid shader program` / `Invalid shader program (...)`). The exit
     status is 0 or 1.
@@ -551,7 +605,7 @@ Translation schemes:
 |------|--------------|
 | `Makefile` | `make` runs bison on `shader.y`, flex on `shader_final.l`, then compiles all C files into `./minic`. `make test` runs the tests, and `make clean` deletes the generated files. |
 | `build.sh` | The same three build steps as a plain shell script, for machines without `make`. |
-| `run_tests.sh` | Runs `./minic` on every test shader and checks the exit status: 0 for `tests/valid`, 1 for the error folders. Prints PASS or FAIL for each file and a summary. |
+| `run_tests.sh` | Runs every existing and optimization/backend shader, checks exit statuses, and asserts representative optimized TAC and vector assembly instructions. |
 | `.gitignore` | Keeps generated files (`minic`, `lex.yy.c`, `y.tab.c`, `y.tab.h`, `y.output`) out of git. |
 | `.gitattributes` | Keeps LF line endings for `*.sh` and `Makefile`, so they still run under Linux or WSL after a Windows checkout. |
 
@@ -572,6 +626,7 @@ Translation schemes:
 | `test.frag` | The lit fragment shader from Review 1: structs, uniforms, a loop, if/else, `discard`, swizzles, `texture()`. |
 | `tests/valid/control_flow.frag` | while, do-while, for, switch with `default`, `break`/`continue`, `&&`/`\|\|`, `?:`, `out`/`inout` parameters, overloading, a prototype defined after `main`, arrays, initializer lists, swizzle writes, and shadowing. |
 | `tests/valid/vertex.vert` | A vertex shader: `layout(location = n)`, a uniform block with an instance name, `mat4` products, a `mat3(mat4)` constructor, `gl_Position`, `gl_PointSize`. |
+| `tests/optimizer_codegen/` | Focused Phase 5/6 shaders for folding, propagation, reassignment safety, CSE, strength reduction, DCE, control flow, vectors, swizzles, constructors, calls, built-ins, conversions, indexing, and discard. |
 | `tests/semantic_errors/types.frag` | 11 type errors, one per marked line: vector size mismatch, a bad swizzle, constructor arity, `mat3 * vec4`, a non-bool condition, wrong `texture()` arguments, `%` on float, ... |
 | `tests/semantic_errors/scopes.frag` | 17 errors and 1 warning about names, scopes and qualifiers: redeclarations, undeclared names, writes to a uniform/const/`in`/built-in, `break` outside a loop, an undefined or unmatched function, ... |
 | `tests/semantic_errors/no_main.frag` | A shader without `void main()`. |
