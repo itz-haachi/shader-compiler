@@ -8,7 +8,9 @@
 pass=0
 fail=0
 tmp="${TMPDIR:-/tmp}/minic_phase5_$$.out"
-trap 'rm -f "$tmp"' EXIT
+c_tmp="${TMPDIR:-/tmp}/minic_phase7_$$.c"
+c_obj="${TMPDIR:-/tmp}/minic_phase7_$$.o"
+trap 'rm -f "$tmp" "$c_tmp" "$c_obj"' EXIT
 
 check() {   # check <file> <expected exit status>
     ./minic --ir-only "$1" > /dev/null 2>&1
@@ -58,6 +60,24 @@ check_not_contains() {   # check_not_contains <file> <compiler args> <literal> <
     fi
 }
 
+check_c_compiles() {   # check_c_compiles <file> <label>
+    file=$1
+    label=$2
+    ./minic --no-tokens --no-ast --no-symtab --no-quads --c-output "$c_tmp" "$file" > /dev/null 2>&1
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        gcc -std=c99 -c "$c_tmp" -o "$c_obj" > /dev/null 2>&1
+        status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+        echo "PASS  $label"
+        pass=$((pass + 1))
+    else
+        echo "FAIL  $label"
+        fail=$((fail + 1))
+    fi
+}
+
 check test.frag 0
 check test1.frag 0
 for f in tests/valid/*;           do check "$f" 0; done
@@ -90,6 +110,16 @@ check_contains tests/optimizer_codegen/uint_wrap.frag "result = 0u" "32-bit unsi
 check_contains tests/optimizer_codegen/dot_scope.frag "DP4 result, v, w" "function-scoped dot specialization"
 check_not_contains tests/optimizer_codegen/dead_temp.frag "ADD" "dead temporary elimination" --target-only
 check_contains tests/optimizer_codegen/vector_backend.frag "ADD sum, leftVector, rightVector" "vector ADD target instruction"
+check_contains tests/optimizer_codegen/vector_backend.frag "static MGValue" "standalone C runtime"
+check_contains tests/optimizer_codegen/vector_backend.frag "v_sum = mg_add(v_leftVector, v_rightVector);" "C vector arithmetic lowering"
+check_contains tests/optimizer_codegen/function_call.frag "v_result = shader_twice" "C user function call lowering"
+check_contains tests/optimizer_codegen/swizzle_write.frag "mg_swizzle_set" "C swizzle write lowering"
+check_contains tests/optimizer_codegen/discard.frag "mg_discard();" "C discard lowering"
+check_c_compiles tests/optimizer_codegen/vector_backend.frag "generated C compiles for vector arithmetic"
+check_c_compiles tests/optimizer_codegen/if_else.frag "generated C compiles for branches"
+check_c_compiles tests/optimizer_codegen/constructors_calls.frag "generated C compiles for constructors and calls"
+check_c_compiles tests/optimizer_codegen/swizzle_write.frag "generated C compiles for swizzles"
+check_c_compiles tests/optimizer_codegen/discard.frag "generated C compiles for discard"
 check_contains tests/optimizer_codegen/constructors_calls.frag "VEC4 R0, value, 1.0" "constructor target instruction"
 check_contains tests/optimizer_codegen/function_call.frag "CALL twice" "function CALL target instruction"
 check_contains tests/optimizer_codegen/dot_texture.frag "NORM normal, leftVector" "normalize target instruction"
@@ -107,12 +137,14 @@ check_contains tests/optimizer_codegen/nested_store.frag "MOV R0.xy, inputValue"
 check_contains tests/optimizer_codegen/if_else.frag "CMP_GT R0, conditionValue, 0.0" "conditional comparison target instruction"
 check_contains tests/optimizer_codegen/while_loop.frag "LABEL L1" "while-loop target labels"
 check_contains tests/optimizer_codegen/for_loop.frag "JMP L1" "for-loop target jump"
+check_contains tests/optimizer_codegen/vector_backend.frag "========== C CODE ==========" "standalone C output section"
 check_contains tests/optimizer_codegen/division_by_zero.frag "DIV value, 5, 0" "division by zero remains unfurled"
 check_contains tests/optimizer_codegen/unsafe_float_strength.frag "Strength reductions           : 0" "unsafe float strength reduction rejected"
 check_contains tests/optimizer_codegen/signed_shift.frag "SHL result, inputValue, 1u" "signed shift strength reduction rejected"
 check_contains tests/optimizer_codegen/signed_shift_constant.frag "result = -4" "signed shift constant semantics"
 check_contains tests/optimizer_codegen/constant_folding.frag "ADD a, 2.0, 3.0" "--no-opt preserves original arithmetic" --no-opt --target-only
 check_not_contains tests/optimizer_codegen/constant_folding.frag "TARGET CODE" "--no-target suppresses assembly" --no-target
+check_not_contains tests/optimizer_codegen/vector_backend.frag "C CODE" "--no-c suppresses C output" --no-c
 check_not_contains tests/optimizer_codegen/constant_folding.frag "TARGET CODE" "--ir-only suppresses assembly" --ir-only
 check_not_contains tests/optimizer_codegen/constant_folding.frag "SYNTAX ANALYSIS" "--target-only suppresses earlier phase output" --target-only
 

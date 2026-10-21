@@ -102,6 +102,11 @@ Symbol *sym_lookup_ir_scope(const char *irname, const char *scope_name)
     return global;
 }
 
+Symbol *symtab_first_symbol(void)
+{
+    return sym_log;
+}
+
 /* pick a unique IR name: x, then x_1, x_2 ... for shadowing declarations */
 static char *make_irname(char *name)
 {

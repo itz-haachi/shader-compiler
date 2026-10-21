@@ -7,6 +7,8 @@
  *   3. Semantic analysis     (semantic.c, symtab.c) symbol table + typed AST
  *   4. Intermediate code     (icg.c)           three-address code / quadruples
  *   5. Optimization          (optimizer.c)     optimized Quad IR
+ *   6. Target code            (codegen.c)      educational vector assembly
+ *   7. C code                (c_codegen.c)    standalone C99 + MGValue runtime
  *
  * A phase only runs if the earlier phases found no errors.
  *
@@ -20,6 +22,8 @@
  *   --no-color    never colour the AST (colour is used only on a terminal)
  *   --no-opt      keep the original IR for the backend
  *   --no-target   suppress target-code output
+ *   --no-c        suppress generated C output
+ *   --c-output f  also write generated C source to f
  *   --target-only suppress verbose output before target code
  */
 #include <stdio.h>
@@ -34,6 +38,7 @@
 #include "icg.h"
 #include "optimizer.h"
 #include "codegen.h"
+#include "c_codegen.h"
 
 extern FILE *yyin;
 extern int yyparse(void);
@@ -48,7 +53,7 @@ static void banner(const char *title)
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "usage: %s [--no-tokens] [--no-ast] [--no-symtab] [--no-quads] [--ir-only] [--no-opt] [--no-target] [--target-only] [--ascii] [--no-color] [file.frag]\n", prog);
+    fprintf(stderr, "usage: %s [--no-tokens] [--no-ast] [--no-symtab] [--no-quads] [--ir-only] [--no-opt] [--no-target] [--no-c] [--c-output file] [--target-only] [--ascii] [--no-color] [file.frag]\n", prog);
 }
 
 int main(int argc, char *argv[])
@@ -56,7 +61,9 @@ int main(int argc, char *argv[])
     int i, result;
     int show_ast = 1, show_symtab = 1, show_quads = 1, show_optimizer = 1;
     int optimize = 1, show_target = 1, target_only = 0;
+    int show_c = 1;
     char *file = 0;
+    char *c_output_file = 0;
     int color = 1;
 
     /* keep stdout and stderr (error messages) in order */
@@ -71,12 +78,20 @@ int main(int argc, char *argv[])
         else if (strcmp(argv[i], "--no-color") == 0)  color = 0;
         else if (strcmp(argv[i], "--no-opt") == 0)     optimize = 0;
         else if (strcmp(argv[i], "--no-target") == 0)  show_target = 0;
+        else if (strcmp(argv[i], "--no-c") == 0)       show_c = 0;
+        else if (strcmp(argv[i], "--c-output") == 0) {
+            if (i + 1 >= argc) {
+                usage(argv[0]);
+                return 2;
+            }
+            c_output_file = argv[++i];
+        }
         else if (strcmp(argv[i], "--target-only") == 0) {
             target_only = 1;
             show_tokens = show_ast = show_symtab = show_quads = show_optimizer = 0;
         }
         else if (strcmp(argv[i], "--ir-only") == 0)
-            show_tokens = show_ast = show_symtab = show_quads = show_target = 0;
+            show_tokens = show_ast = show_symtab = show_quads = show_target = show_c = 0;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -185,6 +200,20 @@ int main(int argc, char *argv[])
         banner("TARGET CODE");
         printf("\n---------- Vector Assembly ----------\n");
         codegen_print();
+    }
+
+    /* ---------- phase 7 ---------- */
+    if (show_c || c_output_file) {
+        c_codegen_generate();
+        if (show_c) {
+            banner("C CODE");
+            printf("\n---------- Standalone C99 ----------\n");
+            c_codegen_print();
+        }
+        if (c_output_file && !c_codegen_write_file(c_output_file)) {
+            fprintf(stderr, "could not write generated C source '%s'\n", c_output_file);
+            return 1;
+        }
     }
 
     printf("\nValid shader program (%d warning(s))\n", semantic_warnings);

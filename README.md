@@ -13,6 +13,7 @@ educational vector assembly.
 | 4 | Intermediate code: three-address code as quadruples | `icg.c` | **done on this branch** |
 | 5 | Optimization | `optimizer.c`, `optimizer.h` | **done** |
 | 6 | Target code (vector assembly) | `codegen.c`, `codegen.h` | **done** |
+| 7 | Standalone C code | `c_codegen.c`, `c_codegen.h` | **done** |
 
 ---
 
@@ -48,7 +49,7 @@ Or run the steps by hand (equivalent to Review 1, plus the new C files):
 ```bash
 bison -y -d shader.y          # or: yacc -d shader.y   -> y.tab.c, y.tab.h
 flex shader_final.l           # or: lex shader_final.l -> lex.yy.c
-gcc -w -o minic lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c optimizer.c codegen.c main.c
+gcc -w -o minic lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c optimizer.c codegen.c c_codegen.c main.c
 ```
 
 Each of these produces the executable `./minic`.
@@ -70,6 +71,8 @@ To type a shader instead, run `./minic` with no file and finish with Ctrl+D.
 | `--ir-only` | print only the verdicts, errors and three-address code |
 | `--no-opt` | keep the original TAC for target generation and report zero optimization changes |
 | `--no-target` | suppress the target vector assembly section |
+| `--no-c` | suppress the standalone C source section |
+| `--c-output file` | also write the generated standalone C99 source to `file` |
 | `--target-only` | validate all earlier phases but print only target assembly and the final verdict |
 | `--ascii` | draw the AST with `|--` and `` `-- `` instead of box-drawing characters (for terminals without UTF-8) |
 | `--no-color` | don't colour the AST (colour is only used when output goes to a terminal; `NO_COLOR` is also respected) |
@@ -122,6 +125,8 @@ N semantic error(s), M warning(s)
 ---------- Optimized TAC ----------          transformed Quad IR plus actual pass statistics
 ========== TARGET CODE ==========
 ---------- Vector Assembly ----------        deterministic educational vector instructions
+========== C CODE ==========
+---------- Standalone C99 ----------          compilable C99 with the generated MGValue runtime
 Valid shader program
 ```
 
@@ -346,6 +351,21 @@ pseudo-instructions such as `ADD`, `MUL`, `CMP_*`, `JMP`, `LABEL`, `VEC2`--`VEC4
 educational assembly notation, not vendor GPU machine code. Runtime array
 length (`length` Quad) is emitted as `ARRAYLEN`, distinct from the GLSL vector
 length built-in (`LEN`).
+
+### Phase 7: standalone C code generation (`c_codegen.c`)
+
+The C backend also consumes only `optimized_quads`. It emits a complete C99
+translation unit, including a small `MGValue` runtime that represents scalar,
+vector, matrix and array values. Arithmetic and comparisons call runtime helper
+functions, labels and jumps become ordinary C control flow, constructors become
+`mg_make_vec`, and user functions receive an argument array. Built-ins such as
+`dot`, `normalize`, `length` and texture calls have dedicated helpers; unknown
+built-ins use a safe zero-valued fallback. `discard` sets a runtime flag and
+returns from the shader function. The runtime is intentionally educational and
+does not require OpenGL headers or a GLSL implementation.
+
+Use `--c-output generated.c` to save only the generated C source, then compile
+it independently, for example `gcc -std=c99 -c generated.c -o generated.o`.
 
 ---
 
@@ -584,17 +604,27 @@ length built-in (`LEN`).
   calls, `TEX`, `NORM`, `LEN`, `DISCARD`, `RET`, and function boundaries.
   It buffers constructor and call parameters so the output remains readable.
 
+#### `c_codegen.h` / `c_codegen.c`: standalone C backend (phase 7)
+
+* **Role:** translates the same optimized Quad IR into a self-contained C99
+  source file.
+* **What it does:** emits the `MGValue` runtime, global declarations, function
+  prototypes, generated shader functions, and a C `main` wrapper. It preserves
+  vector operations, branches, calls, constructors, swizzles, indexing and
+  `discard` without requiring GLSL libraries.
+
 #### `main.c`: compiler driver
 
 * **Role:** the program's `main()`, which runs the phases in order.
 * **What it does:**
   * Reads the command-line options (`--no-tokens`, `--no-ast`,
     `--no-symtab`, `--no-quads`, `--ir-only`, `--no-opt`, `--no-target`,
-    `--target-only`, `--ascii`, `--no-color`).
+    `--target-only`, `--no-c`, `--c-output`, `--ascii`, `--no-color`).
   * Opens the input file, or reads from stdin.
   * Runs `yyparse()` (phases 1 and 2), then `semantic_analyze()`
     (phase 3), `icg_generate()` (phase 4), `optimize_ir()` (phase 5),
-    and `codegen_generate()` (phase 6), printing each enabled section.
+    `codegen_generate()` (phase 6), and `c_codegen_generate()` (phase 7),
+    printing each enabled section.
   * Stops at the first phase that reports errors and prints the verdict
     (`Valid shader program` / `Invalid shader program (...)`). The exit
     status is 0 or 1.
@@ -605,7 +635,7 @@ length built-in (`LEN`).
 |------|--------------|
 | `Makefile` | `make` runs bison on `shader.y`, flex on `shader_final.l`, then compiles all C files into `./minic`. `make test` runs the tests, and `make clean` deletes the generated files. |
 | `build.sh` | The same three build steps as a plain shell script, for machines without `make`. |
-| `run_tests.sh` | Runs every existing and optimization/backend shader, checks exit statuses, and asserts representative optimized TAC and vector assembly instructions. |
+| `run_tests.sh` | Runs every existing and optimization/backend shader, checks exit statuses, asserts representative optimized TAC/vector assembly/C output, and compiles representative generated C99 files. |
 | `.gitignore` | Keeps generated files (`minic`, `lex.yy.c`, `y.tab.c`, `y.tab.h`, `y.output`) out of git. |
 | `.gitattributes` | Keeps LF line endings for `*.sh` and `Makefile`, so they still run under Linux or WSL after a Windows checkout. |
 
