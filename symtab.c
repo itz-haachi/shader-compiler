@@ -79,6 +79,34 @@ Symbol *sym_lookup(const char *name)
     return 0;
 }
 
+Symbol *sym_lookup_ir(const char *irname)
+{
+    return sym_lookup_ir_scope(irname, 0);
+}
+
+Symbol *sym_lookup_ir_scope(const char *irname, const char *scope_name)
+{
+    Symbol *s;
+    Symbol *global = 0;
+    if (!irname)
+        return 0;
+    for (s = sym_log; s; s = s->log_next)
+        if (s->irname && strcmp(s->irname, irname) == 0) {
+            if (scope_name && s->scope_name &&
+                strcmp(s->scope_name, scope_name) == 0)
+                return s;
+            if (!global && s->scope_name &&
+                strcmp(s->scope_name, "global") == 0)
+                global = s;
+        }
+    return global;
+}
+
+Symbol *symtab_first_symbol(void)
+{
+    return sym_log;
+}
+
 /* pick a unique IR name: x, then x_1, x_2 ... for shadowing declarations */
 static char *make_irname(char *name)
 {

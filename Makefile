@@ -6,8 +6,8 @@ LEX    = flex
 YACC   = bison -y
 CFLAGS = -w
 
-OBJ_SRC = lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c main.c
-HEADERS = ast.h types.h symtab.h semantic.h icg.h
+OBJ_SRC = lex.yy.c y.tab.c ast.c types.c symtab.c semantic.c icg.c optimizer.c codegen.c c_codegen.c main.c
+HEADERS = ast.h types.h symtab.h semantic.h icg.h optimizer.h codegen.h c_codegen.h
 
 minic: $(OBJ_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) -o minic $(OBJ_SRC)
