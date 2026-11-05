@@ -22,7 +22,7 @@ int lex_errors = 0;
 char last_lexeme[256] = "";     /* used by yyerror() in shader.y */
 
 int is_struct_name(char *s);    /* defined in shader.y */
-void skip_block_comment();
+int skip_block_comment();
 
 /* ---------------- Keyword table ---------------- */
 #define RESERVED (-1)
@@ -192,7 +192,7 @@ FS      ([fF]|lf|LF)
 [ \t\r\f\v]+                    ;
 \n                              { lineno++; }
 "//".*                          ;
-"/*"                            { skip_block_comment(); }
+"/*"                            { if(!skip_block_comment()) yyterminate(); }
 ^[ \t]*"#".*                    { if (show_tokens) printf("%-5d %-12s %-14s %s\n", lineno, "PREPROCESSOR", "", yytext); }
 
 {D}+"."{D}*{E}?{FS}?            { return emit(FLOATCONST, "CONSTANT", "float"); }
@@ -268,7 +268,7 @@ FS      ([fF]|lf|LF)
 
 %%
 
-void skip_block_comment()
+int skip_block_comment()
 {
     int c, prev = 0, start = lineno;
     for (;;) {
@@ -276,12 +276,12 @@ void skip_block_comment()
         if (c == 0 || c == EOF) {
             fprintf(stderr, "line %d: lexical error: unterminated comment\n", start);
             lex_errors++;
-            return;
+            return 0;
         }
         if (c == '\n')
             lineno++;
         if (prev == '*' && c == '/')
-            return;
+            return 1;
         prev = c;
     }
 }
