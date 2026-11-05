@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+extern int lex_errors;
 #include "y.tab.h"                 // token numbers like TYPE_NAME, IDENTIFIER
 extern int lineno;
 int yylex(void);                   // the lexer: returns the next token
@@ -14,6 +15,7 @@ protected:
 	void SetUp() override {
 		show_tokens = 0;
 		lineno = 1;
+		lex_errors = 0;
 	}
 };
 TEST_F(LexerTest, Vec3IsTypeName) {
@@ -64,5 +66,11 @@ TEST_F(LexerTest,BlockedCommentIsSkipped) {
         EXPECT_EQ(yylex(),IDENTIFIER);
         EXPECT_EQ(yylex(),0);
         EXPECT_EQ(lineno,2);
+        yy_delete_buffer(buf);
+}
+TEST_F(LexerTest,UnterminatedBlockCommentIsError) {
+        YY_BUFFER_STATE buf = yy_scan_string("/* never closed");
+	EXPECT_EQ(yylex(),0);
+	EXPECT_EQ(lex_errors,1);
         yy_delete_buffer(buf);
 }
