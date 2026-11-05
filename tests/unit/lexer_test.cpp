@@ -37,3 +37,32 @@ TEST_F(LexerTest,NewlineIncrementsLineNumber) {
         EXPECT_EQ(yylex(),IDENTIFIER);
 	yy_delete_buffer(buf);
 }
+TEST_F(LexerTest,IfIsKeyword) {
+	YY_BUFFER_STATE buf = yy_scan_string("if");
+	EXPECT_EQ(yylex(),IF);
+        yy_delete_buffer(buf);
+}
+TEST_F(LexerTest,FloatConstant) {
+        YY_BUFFER_STATE buf = yy_scan_string("3.14");
+	EXPECT_EQ(yylex(),FLOATCONST);
+        yy_delete_buffer(buf);
+}
+TEST_F(LexerTest,IntConstant) {
+        YY_BUFFER_STATE buf = yy_scan_string("42");
+        EXPECT_EQ(yylex(),INTCONST);
+        yy_delete_buffer(buf);
+}
+TEST_F(LexerTest,LineCommentIsSkipped) {
+	YY_BUFFER_STATE buf = yy_scan_string("// hello\nx");
+	EXPECT_EQ(yylex(),IDENTIFIER);
+	EXPECT_EQ(yylex(),0);
+	EXPECT_EQ(lineno,2);
+        yy_delete_buffer(buf);
+}
+TEST_F(LexerTest,BlockedCommentIsSkipped) {
+        YY_BUFFER_STATE buf = yy_scan_string("/* a\nb */ x");
+        EXPECT_EQ(yylex(),IDENTIFIER);
+        EXPECT_EQ(yylex(),0);
+        EXPECT_EQ(lineno,2);
+        yy_delete_buffer(buf);
+}
