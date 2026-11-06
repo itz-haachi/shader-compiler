@@ -29,7 +29,7 @@ FetchContent_Declare(googletest
 FetchContent_MakeAvailable(googletest)
 
 enable_testing()
-add_executable(unit_tests tests/unit/lexer_test.cpp)
+add_executable(unit_tests tests/unit/lexer_test.cpp tests/unit/parser_test.cpp)
 target_link_libraries(unit_tests minicore GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(unit_tests)
